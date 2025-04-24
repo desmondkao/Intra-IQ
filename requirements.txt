@@ -1,0 +1,4 @@
+sentence-transformers>=2.2.2
+pymupdf>=1.21.1
+nltk>=3.8.1
+qdrant-client>=1.5.0
