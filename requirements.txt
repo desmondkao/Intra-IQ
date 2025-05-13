@@ -1,4 +1,8 @@
-sentence-transformers>=2.2.2
-pymupdf>=1.21.1
-nltk>=3.8.1
-qdrant-client>=1.5.0
+streamlit==1.27.0
+sentence-transformers==2.2.2
+qdrant-client==1.4.0
+transformers==4.31.0
+torch==2.0.1
+PyMuPDF==1.22.5
+nltk==3.8.1
+openai==0.28.1
