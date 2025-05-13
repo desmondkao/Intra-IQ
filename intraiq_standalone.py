@@ -1,17 +1,3 @@
-"""
-IntraIQ Standalone RAG Pipeline
-
-This is a simplified standalone version of IntraIQ that combines all functionality
-into a single file to avoid import and configuration issues.
-
-Usage:
-1. First run to ingest documents:
-   python3 intraiq_standalone.py --ingest --input_dir your_documents/
-
-2. Then run to query:
-   python3 intraiq_standalone.py --query "Your question about the documents?"
-"""
-
 import os
 import re
 import argparse
@@ -59,16 +45,6 @@ try:
 except ImportError:
     print("Warning: NLTK not installed. Using simple tokenization.")
     NLTK_AVAILABLE = False
-
-# Try to load SQL components
-try:
-    import sqlite3
-    import pandas as pd
-    from sql_document_store import SQLDocumentStore
-    SQL_AVAILABLE = True
-except ImportError:
-    print("Warning: SQLDocumentStore not available. SQL features will be disabled.")
-    SQL_AVAILABLE = False
 
 # Simple tokenizers as fallback
 def simple_sent_tokenize(text):
@@ -133,7 +109,7 @@ DEFAULT_CHUNK_OVERLAP = 50
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_LLM_MODEL = "google/flan-t5-small"
 DEFAULT_TOP_K = 3
-DEFAULT_COLLECTION = "intraiq_documents"
+DEFAULT_COLLECTION = "opus_documents"
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 QDRANT_LOCAL_PATH = os.path.join(DATA_DIR, "qdrant")
 
@@ -150,6 +126,52 @@ class DocumentProcessor:
         """Initialize the document processor."""
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+
+    def delete_document(self, document_id: str) -> bool:
+        """Delete a document and all its chunks from the store."""
+        try:
+            # Find all points with this document_id
+            filter_query = {
+                "must": [
+                    {
+                        "key": "document_id",
+                        "match": {
+                            "value": document_id
+                        }
+                    }
+                ]
+            }
+            
+            # Get points matching the filter
+            search_result = self.client.scroll(
+                collection_name=self.collection_name,
+                filter=filter_query,
+                limit=1000,  # Adjust based on expected max chunks per document
+                with_payload=False,
+                with_vectors=False
+            )
+            
+            if not search_result.points:
+                print(f"No points found for document_id: {document_id}")
+                return False
+            
+            # Extract point IDs
+            point_ids = [point.id for point in search_result.points]
+            
+            # Delete the points
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=rest.PointIdsList(
+                    points=point_ids
+                )
+            )
+            
+            print(f"Deleted {len(point_ids)} chunks for document: {document_id}")
+            return True
+            
+        except Exception as e:
+            print(f"Error deleting document: {str(e)}")
+            return False
     
     def read_pdf(self, file_path: str) -> str:
         """Extract text from a PDF file."""
@@ -177,6 +199,52 @@ class DocumentProcessor:
             return self.read_pdf(file_path)
         else:  # Assume it's a text file
             return self.read_text_file(file_path)
+        
+    def delete_document(self, document_id: str) -> bool:
+        """Delete a document and all its chunks from the store."""
+        try:
+            # Find all points with this document_id
+            filter_query = {
+                "must": [
+                    {
+                        "key": "document_id",
+                        "match": {
+                            "value": document_id
+                        }
+                    }
+                ]
+            }
+            
+            # Get points matching the filter
+            search_result = self.client.scroll(
+                collection_name=self.collection_name,
+                filter=filter_query,
+                limit=1000,  # Adjust based on expected max chunks per document
+                with_payload=False,
+                with_vectors=False
+            )
+            
+            if not search_result.points:
+                print(f"No points found for document_id: {document_id}")
+                return False
+            
+            # Extract point IDs
+            point_ids = [point.id for point in search_result.points]
+            
+            # Delete the points
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=rest.PointIdsList(
+                    points=point_ids
+                )
+            )
+            
+            print(f"Deleted {len(point_ids)} chunks for document: {document_id}")
+            return True
+            
+        except Exception as e:
+            print(f"Error deleting document: {str(e)}")
+            return False
     
     def chunk_text(self, text: str) -> List[str]:
         """Split text into chunks with special handling for tabular financial data."""
@@ -191,7 +259,8 @@ class DocumentProcessor:
             # If this part looks like tabular data (lots of numbers and few words)
             if sum(c.isdigit() for c in part) > len(part) * 0.3 and len(re.findall(r'[A-Za-z]{4,}', part)) < 5:
                 # Keep table sections together as a single chunk
-                chunks.append(part)
+                if part.strip():  # Only add non-empty chunks
+                    chunks.append(part)
             else:
                 # Process regular text using the standard method
                 sentences = sent_tokenize(part)
@@ -204,7 +273,10 @@ class DocumentProcessor:
                     token_count = len(tokens)
                     
                     if current_token_count + token_count > self.chunk_size and current_chunk:
-                        chunks.append(" ".join(current_chunk))
+                        # Create a chunk identifier to help with uniqueness
+                        chunk_text = " ".join(current_chunk)
+                        if chunk_text.strip():  # Only add non-empty chunks
+                            chunks.append(chunk_text)
                         
                         if self.chunk_overlap > 0 and len(current_chunk) > 1:
                             # Calculate overlap sentences
@@ -229,9 +301,12 @@ class DocumentProcessor:
                     current_token_count += token_count
                 
                 if current_chunk:
-                    chunks.append(" ".join(current_chunk))
+                    chunk_text = " ".join(current_chunk)
+                    if chunk_text.strip():  # Only add non-empty chunks
+                        chunks.append(chunk_text)
         
-        return chunks
+        # Add chunk index prefix to help with differentiation in embedding space
+        return [f"[Chunk {i+1}/{len(chunks)}] {chunk}" for i, chunk in enumerate(chunks)]
     def process_document(self, file_path: str) -> Dict[str, Any]:
         """Process a document: read and chunk."""
         # Get document filename for metadata
@@ -831,7 +906,7 @@ YOUR RESPONSE MUST:
 
 Your analysis should reflect deep expertise in financial markets and documentation.
 """
-        
+
         # Create user message with query and both information sources
         user_message = f"""Original Query: {query}
 
@@ -973,33 +1048,19 @@ class IntraIQPipeline:
             self._llm = LLMAnswerer(model_name=self.llm_model)
         return self._llm
 
-    @property
-    def sql_store(self):
-        if self._sql_store is None and SQL_AVAILABLE:
-            self._sql_store = SQLDocumentStore(db_path=self.sql_db_path)
-        return self._sql_store
-    
     def __init__(
         self,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         llm_model: str = DEFAULT_LLM_MODEL,
         collection_name: str = DEFAULT_COLLECTION,
         top_k: int = DEFAULT_TOP_K,
-        sql_db_path: str = "intraiq_documents.db",
         openai_model: str = "gpt-3.5-turbo"  # Add default OpenAI model parameter
     ):
-        """
-        Initialize the RAG pipeline with both vector and SQL database capabilities.
-        
-        For interviews, explain how this dual-database approach provides:
-        1. Semantic search through vector embeddings
-        2. Structured analytics and exact text search through SQL
-        """
+        """Initialize the RAG pipeline."""
         self.embedding_model = embedding_model
         self.llm_model = llm_model
         self.collection_name = collection_name
         self.top_k = top_k
-        self.sql_db_path = sql_db_path  # Store the SQL DB path
         
         # Set the OpenAI model with validation
         self.available_openai_models = ["gpt-3.5-turbo", "gpt-4o", "gpt-4-turbo"]
@@ -1015,18 +1076,11 @@ class IntraIQPipeline:
         self._store = None
         self._llm = None
         self._search_agent = None
-        self._sql_store = None  # Add SQL store property
     
-    # Add this ingest_documents method to the IntraIQPipeline class:
-
     def ingest_documents(self, input_dir: str) -> List[str]:
         """
-        Process documents and store them in Qdrant and SQL database.
+        Process documents and store them in Qdrant.
         Returns a list of document IDs for the processed documents.
-        
-        This method demonstrates the dual-storage approach:
-        1. Vector DB (Qdrant) for semantic search
-        2. SQL DB for metadata and text search
         """
         # Get all PDF and text files in the input directory
         files_to_process = []
@@ -1060,11 +1114,6 @@ class IntraIQPipeline:
             # Store in Qdrant
             self.store.store_document(document)
             print(f"  - Stored in Qdrant collection: {self.store.collection_name}")
-            
-            # Also store in SQL database if available
-            if self.sql_store:
-                sql_result = self.sql_store.store_document(document)
-                print(f"  - Stored in SQL database: {sql_result['status']}")
         
         print("Document processing complete!")
         return document_ids
@@ -1104,22 +1153,6 @@ class IntraIQPipeline:
             selected_model = self.openai_model
             
         print(f"Using OpenAI model: {selected_model}")
-        
-        # Log query to SQL database search history if available
-        if self.sql_store:
-            try:
-                # Start a cursor to log to search_history
-                conn = sqlite3.connect(self.sql_db_path)
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO search_history (query, timestamp, enhanced_with_current_info, model_used) VALUES (?, ?, ?, ?)",
-                    (query, datetime.now().isoformat(), 1 if enable_search_agent else 0, selected_model)
-                )
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                # Don't let SQL errors interrupt the main pipeline
-                print(f"Warning: Error logging query to SQL: {str(e)}")
         
         # Generate embedding for the query
         query_embedding = self.embedder.get_embeddings([query])[0]
@@ -1177,209 +1210,5 @@ class IntraIQPipeline:
                 model=selected_model  # Pass the selected model
             )
             result.update(enhanced_result)
-            
-            # Update SQL search history with search info if available
-            if self.sql_store and "search_performed" in result and result["search_performed"]:
-                try:
-                    # Update search history with results
-                    conn = sqlite3.connect(self.sql_db_path)
-                    cursor = conn.cursor()
-                    
-                    # Get the latest search_id
-                    cursor.execute("SELECT MAX(search_id) FROM search_history")
-                    search_id = cursor.fetchone()[0]
-                    
-                    if search_id:
-                        # Extract document IDs and update record
-                        doc_ids = ",".join([src["document_id"] for src in result["sources"] 
-                                           if "document_id" in src])
-                        
-                        # Also store document date estimate if available
-                        doc_date = result.get("document_date_estimate", "Unknown")
-                        
-                        cursor.execute(
-                            """UPDATE search_history 
-                               SET document_ids = ?, document_date_estimate = ?
-                               WHERE search_id = ?""",
-                            (doc_ids, doc_date, search_id)
-                        )
-                        conn.commit()
-                    
-                    conn.close()
-                except Exception as e:
-                    # Don't let SQL errors interrupt the main process
-                    print(f"Warning: Error updating SQL search history: {str(e)}")
         
         return result
-    
-    # Add these new SQL-specific methods
-    def get_document_stats(self):
-        """
-        Get document statistics from SQL database.
-        
-        For your interview, this demonstrates how SQL enables instant
-        analytics capabilities on your document corpus.
-        """
-        if self.sql_store:
-            return self.sql_store.get_document_stats()
-        return {"error": "SQL store not available"}
-
-    def sql_keyword_search(self, keyword):
-        """
-        Perform keyword-based search using SQL.
-        
-        This complements vector search by finding exact text matches.
-        For interview, explain how this addresses different use cases
-        than semantic search.
-        """
-        if self.sql_store:
-            return self.sql_store.search_documents(keyword)
-        return []
-
-    def run_sql_analytics(self, query):
-        """
-        Run a custom SQL analytics query.
-        
-        This demonstrates SQL's power for flexible data analysis.
-        For interview, show how this enables custom reports and metrics.
-        """
-        if self.sql_store:
-            return self.sql_store.run_custom_query(query)
-        return {"error": "SQL store not available"}
-
-
-def format_results(results: Dict[str, Any], show_sources: bool = True) -> str:
-    """Format results for display."""
-    output = f"Answer: {results['answer']}\n"
-    
-    if show_sources and results['sources']:
-        output += "\nSources:\n"
-        for i, source in enumerate(results['sources'], 1):
-            # Handle both document and web sources
-            if source.get("source_type") == "web_search":
-                output += f"\n{i}. Web Source: {source['document_name']}"
-                if "url" in source:
-                    output += f"\n   URL: {source['url']}"
-                if "published_date" in source:
-                    output += f"\n   Published: {source['published_date']}"
-            else:
-                output += f"\n{i}. Document: {source['document_name']}"
-                output += f"\n   Score: {source['score']:.4f}"
-            
-            # Show preview of source content
-            if len(source['text']) > 200:
-                preview = source['text'][:200] + "..."
-            else:
-                preview = source['text']
-            output += f"\n   Preview: {preview}\n"
-    
-    # Show search reasoning if available
-    if "search_performed" in results and results["search_performed"]:
-        output += "\nSearch Information:\n"
-        output += f"Reasoning: {results.get('reasoning', 'No reasoning provided')}\n"
-        if results.get("search_successful", False):
-            output += f"Search Query: {results.get('search_query', 'N/A')}\n"
-        else:
-            output += f"Search Error: {results.get('search_error', 'Unknown error')}\n"
-    
-    return output
-
-
-def main():
-    """Parse command line arguments and run the IntraIQ pipeline."""
-    parser = argparse.ArgumentParser(description="IntraIQ RAG Pipeline")
-    
-    # Mode arguments
-    mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument("--ingest", action="store_true", help="Ingest documents")
-    mode_group.add_argument("--query", type=str, help="Query to answer")
-    
-    # Other arguments
-    parser.add_argument("--input_dir", help="Directory containing input documents")
-    parser.add_argument("--top_k", type=int, default=DEFAULT_TOP_K, 
-                        help="Number of document chunks to retrieve")
-    parser.add_argument("--collection", default=DEFAULT_COLLECTION,
-                        help="Name of the Qdrant collection")
-    parser.add_argument("--embedding_model", default=DEFAULT_EMBEDDING_MODEL,
-                        help="Name of the SentenceTransformer model")
-    parser.add_argument("--llm_model", default=DEFAULT_LLM_MODEL,
-                        help="Hugging Face model to use")
-    parser.add_argument("--use-openai", action="store_true",
-                        help="Use OpenAI for answer generation")
-    parser.add_argument("--openai-model", default="gpt-3.5-turbo",
-                        help="OpenAI model to use")
-    parser.add_argument("--enable-search", action="store_true",
-                        help="Enable search agent for current market information")
-    parser.add_argument("--json", action="store_true", 
-                        help="Output results as JSON")
-    parser.add_argument("--no-sources", action="store_true",
-                        help="Hide source documents in output")
-    parser.add_argument("--sql-db-path", default="intraiq_documents.db",
-                        help="Path to SQLite database")
-    
-    # SQL-specific operations
-    parser.add_argument("--sql-stats", action="store_true",
-                        help="Show document statistics from SQL database")
-    parser.add_argument("--sql-search", type=str,
-                        help="Perform keyword search using SQL")
-    parser.add_argument("--sql-query", type=str,
-                        help="Run a custom SQL query on the database")
-    
-    args = parser.parse_args()
-    
-    # Initialize pipeline
-    pipeline = IntraIQPipeline(
-        embedding_model=args.embedding_model,
-        llm_model=args.llm_model,
-        collection_name=args.collection,
-        top_k=args.top_k,
-        sql_db_path=args.sql_db_path
-    )
-    
-    # Handle SQL-specific operations
-    if args.sql_stats:
-        stats = pipeline.get_document_stats()
-        print(json.dumps(stats, indent=2))
-        return
-    
-    if args.sql_search:
-        results = pipeline.sql_keyword_search(args.sql_search)
-        print(f"Found {len(results)} matches:")
-        for i, result in enumerate(results, 1):
-            print(f"\nMatch {i} - {result['filename']} (Chunk {result['chunk_index']}):")
-            print(f"Word count: {result['word_count']}")
-            print(f"Preview: {result['text'][:200]}...")
-        return
-    
-    if args.sql_query:
-        results = pipeline.run_sql_analytics(args.sql_query)
-        if isinstance(results, list):
-            print(json.dumps(results, indent=2))
-        else:
-            print(results)
-        return
-    
-    # Run in the appropriate mode
-    if args.ingest:
-        if not args.input_dir:
-            parser.error("--input_dir is required for ingest mode")
-        
-        pipeline.ingest_documents(args.input_dir)
-    else:  # Query mode
-        results = pipeline.run_rag(
-            query=args.query,
-            use_openai=args.use_openai,
-            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-            openai_model=args.openai_model,
-            enable_search_agent=args.enable_search
-        )
-        
-        # Output results
-        if args.json:
-            print(json.dumps(results, indent=2))
-        else:
-            print(format_results(results, show_sources=not args.no_sources))
-
-
-if __name__ == "__main__":
-    main()

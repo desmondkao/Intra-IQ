@@ -6,107 +6,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import uuid
-import sqlite3
 import threading
 from datetime import datetime
 from dotenv import load_dotenv
 from intraiq_standalone import IntraIQPipeline, DEFAULT_EMBEDDING_MODEL, DEFAULT_LLM_MODEL
 
-# Fix for SQLite threading issues
-# Thread-local storage for SQLite connections
+# Thread-local storage
 thread_local = threading.local()
-
-def get_db_connection(db_path):
-    """Get a thread-local database connection."""
-    if not hasattr(thread_local, "connection") or thread_local.connection is None:
-        thread_local.connection = sqlite3.connect(db_path)
-    return thread_local.connection
-
-# ADD THIS FUNCTION TO FIX DOCUMENT PERSISTENCE
-def fix_persistent_files_table(pipeline):
-    """
-    Fixes the document library by automatically adding existing documents to the persistent_files table.
-    This ensures all documents appear in the library.
-    
-    Args:
-        pipeline: The IntraIQPipeline instance with sql_store initialized
-        
-    Returns:
-        int: Number of documents added to the persistent_files table
-    """
-    if not hasattr(pipeline, 'sql_store') or pipeline.sql_store is None:
-        print("SQL store not available")
-        return 0
-    
-    conn = sqlite3.connect(pipeline.sql_db_path)
-    cursor = conn.cursor()
-    
-    # Check if binary_data column exists
-    cursor.execute("PRAGMA table_info(documents)")
-    columns = [col[1] for col in cursor.fetchall()]
-    has_binary_data = 'binary_data' in columns
-    
-    # Find documents that exist in documents table but not in persistent_files
-    if has_binary_data:
-        # If binary_data exists, only add documents with binary data
-        cursor.execute("""
-        SELECT d.document_id, d.filename, d.file_size, d.upload_date, 
-               d.binary_data IS NOT NULL as has_binary
-        FROM documents d
-        LEFT JOIN persistent_files p ON d.document_id = p.document_id
-        WHERE p.document_id IS NULL AND d.binary_data IS NOT NULL
-        """)
-    else:
-        # If binary_data doesn't exist, add all documents not in persistent_files
-        cursor.execute("""
-        SELECT d.document_id, d.filename, d.file_size, d.upload_date, 
-               1 as has_binary
-        FROM documents d
-        LEFT JOIN persistent_files p ON d.document_id = p.document_id
-        WHERE p.document_id IS NULL
-        """)
-    
-    missing_docs = cursor.fetchall()
-    added_count = 0
-    
-    for doc in missing_docs:
-        document_id = doc[0]
-        filename = doc[1]
-        file_size = doc[2] or 0
-        upload_date = doc[3] or datetime.now().isoformat()
-        has_binary = doc[4]
-        
-        if has_binary:
-            # Add to persistent_files table
-            file_id = str(uuid.uuid4())
-            cursor.execute("""
-            INSERT INTO persistent_files 
-            (file_id, document_id, filename, file_size, upload_date, last_accessed, access_count)
-            VALUES (?, ?, ?, ?, ?, ?, 1)
-            """, (
-                file_id, 
-                document_id, 
-                filename, 
-                file_size, 
-                upload_date, 
-                datetime.now().isoformat()
-            ))
-            added_count += 1
-    
-    conn.commit()
-    conn.close()
-    
-    return added_count
-
-# Enable foreign keys in SQLite
-sqlite3.threadsafety = 0
 
 # Load environment variables
 load_dotenv()
 
 # Page configuration with light theme
 st.set_page_config(
-    page_title="Hermes | Financial Document Analysis",
+    page_title="Opus | Financial Document Analysis",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -253,13 +166,12 @@ st.markdown("""
 
 # --- Initialize session state ---
 if "pipeline" not in st.session_state:
-    # Create the pipeline with a consistent path for Qdrant
+    # Create the pipeline
     qdrant_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qdrant_storage")
     os.makedirs(qdrant_path, exist_ok=True)
     
     st.session_state.pipeline = IntraIQPipeline(
-        collection_name="hermes_documents",
-        sql_db_path="hermes_documents.db",
+        collection_name="opus_documents",
         openai_model="gpt-3.5-turbo"  # Default model, will be updated when users change selection
     )
     
@@ -273,7 +185,7 @@ if "document_library_tab" not in st.session_state:
 
 # --- Sidebar Configuration ---
 with st.sidebar:
-    st.markdown('<div class="main-header">Hermes</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">Opus</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-header">Financial Document Analysis</div>', unsafe_allow_html=True)
     
     st.divider()
@@ -314,7 +226,7 @@ with st.sidebar:
         
         # Check if API key is available
         if not openai_api_key:
-            st.warning("⚠️ No OpenAI API key found in environment variables. Please add it to your .env file.")
+            st.warning("No OpenAI API key found in environment variables. Please add it to your .env file.")
             st.markdown("""
             <div class="info-box">
             Add your OpenAI API key to a .env file in your project directory:
@@ -322,7 +234,7 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True)
         else:
-            st.success("✅ OpenAI API key loaded from environment variables")
+            st.success("OpenAI API key loaded from environment variables")
         
         # Updated model selection with new options
         openai_model = st.selectbox(
@@ -334,11 +246,11 @@ with st.sidebar:
         
         # Display estimated cost information with model-specific notes
         if openai_model == "gpt-3.5-turbo":
-            st.info("💡 Using gpt-3.5-turbo (fastest, lowest cost)")
+            st.info("Using gpt-3.5-turbo (fastest, lowest cost)")
         elif openai_model == "gpt-4o":
-            st.info("💡 Using gpt-4o (balanced performance/cost)")
+            st.info("Using gpt-4o (balanced performance/cost)")
         else:
-            st.info("💡 Using gpt-4-turbo (most capable, highest cost)")
+            st.info("Using gpt-4-turbo (most capable, highest cost)")
     else:
         # Check if transformers are available
         try:
@@ -352,7 +264,7 @@ with st.sidebar:
         llm_model = st.selectbox("Local LLM Model", llm_models, disabled=not transformers_available)
         
         if not transformers_available:
-            st.warning("⚠️ Transformers package not installed. Local models will not be available.")
+            st.warning("Transformers package not installed. Local models will not be available.")
     
     # Retrieval settings
     st.markdown("### Retrieval Settings")
@@ -380,13 +292,13 @@ with st.sidebar:
     )
     
     if not search_agent_available and enable_search_agent:
-        st.warning("⚠️ Search agent requires openai and requests packages. Please install them.")
+        st.warning("Search agent requires openai and requests packages. Please install them.")
     
     if enable_search_agent and search_agent_available:
         # Check for Tavily API key
         tavily_api_key = os.getenv("TAVILY_API_KEY", "")
         if not tavily_api_key:
-            st.warning("⚠️ No Tavily API key found. Please add it to your .env file.")
+            st.warning("No Tavily API key found. Please add it to your .env file.")
             st.markdown("""
             <div class="info-box">
             Add your Tavily API key to your .env file:
@@ -394,29 +306,27 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True)
         else:
-            st.success("✅ Tavily API key loaded from environment variables")
+            st.success("Tavily API key loaded from environment variables")
             
         # Also need OpenAI for the agent
         if not openai_api_key:
-            st.warning("⚠️ The search agent also requires an OpenAI API key")
+            st.warning("The search agent also requires an OpenAI API key")
 
     # Document Library section
     st.divider()
-    st.markdown("### 📚 Document Library")
+    st.markdown("### Document Library")
     show_document_library = st.checkbox("Show Document Library", value=False)
 
     # Advanced features section
     st.divider()
     st.markdown("### Advanced Features")
-    show_sql_features = st.checkbox("Show SQL Features", value=False)
     show_clustering = st.checkbox("Show Document Clustering", value=False)
     
-    st.divider()
-    
     # About section
+    st.divider()
     st.markdown("### About")
     st.markdown("""
-    Hermes is a document analysis tool that uses Retrieval-Augmented Generation (RAG) to 
+    Opus is a document analysis tool that uses Retrieval-Augmented Generation (RAG) to 
     provide accurate answers from your financial documents.
     
     Upload your financial documents, ask questions, and get insights instantly.
@@ -424,14 +334,14 @@ with st.sidebar:
 
 # --- Main Content ---
 # Title
-st.markdown('<div class="main-header">Hermes – Financial Document Analysis</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">Opus – Financial Document Analysis</div>', unsafe_allow_html=True)
 
 # Upload Section
-st.subheader("📄 Upload Documents")
+st.subheader("Upload Documents")
 
 st.markdown("""
 <div class="info-box">
-Upload your financial documents to analyze. Hermes supports PDF and TXT files.
+Upload your financial documents to analyze. Opus supports PDF and TXT files.
 </div>
 """, unsafe_allow_html=True)
 
@@ -468,81 +378,24 @@ if uploaded_files:
             # Process documents with the pipeline - store document IDs 
             document_ids = st.session_state.pipeline.ingest_documents(temp_dir)
             
-            # If requested, save binary data to SQL database
-            if save_to_library and hasattr(st.session_state.pipeline, 'sql_store'):
-                saved_count = 0
-                for i, doc_id in enumerate(document_ids):
-                    if doc_id and file_details[i]["binary_data"] is not None:
-                        success = st.session_state.pipeline.sql_store.store_binary_document(
-                            doc_id,
-                            file_details[i]["name"],
-                            file_details[i]["binary_data"]
-                        )
-                        if success:
-                            saved_count += 1
-                
-                if saved_count > 0:
-                    st.success(f"Saved {saved_count} document(s) to library for future use")
-                
-                # ADDED: Fix any documents not in persistent_files table
-                fixed_count = fix_persistent_files_table(st.session_state.pipeline)
-                if fixed_count > 0:
-                    st.success(f"✨ Fixed {fixed_count} document(s) in library")
-            
             # Show success message and document details
             st.markdown(f"""
             <div class="success-box">
             Successfully processed {len(uploaded_files)} document(s)!
-            {" Documents saved to library for future use." if save_to_library else ""}
+            {" Documents processed successfully." if save_to_library else ""}
             </div>
             """, unsafe_allow_html=True)
             
             # Show document details
             for doc in file_details:
-                st.markdown(f"📄 **{doc['name']}** ({doc['size']})")
+                st.markdown(f"**{doc['name']}** ({doc['size']})")
             
-            # Show brief document stats
-            try:
-                stats = {
-                    "document_count": 0,
-                    "chunk_count": 0,
-                    "total_word_count": 0
-                }
-                
-                # Use thread-safe connection
-                conn = get_db_connection(st.session_state.pipeline.sql_db_path)
-                cursor = conn.cursor()
-                
-                try:
-                    cursor.execute('SELECT COUNT(*) FROM documents')
-                    stats["document_count"] = cursor.fetchone()[0] or 0
-                    cursor.execute('SELECT COUNT(*) FROM chunks')
-                    stats["chunk_count"] = cursor.fetchone()[0] or 0
-                    cursor.execute('SELECT SUM(word_count) FROM chunks')
-                    stats["total_word_count"] = cursor.fetchone()[0] or 0
-                except Exception as e:
-                    # Silently ignore errors, as these are optional metrics
-                    pass
-                
-                # Display simple stats
-                st.markdown("### 📊 Document Stats")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Documents", stats["document_count"])
-                with col2:
-                    st.metric("Chunks", stats["chunk_count"])
-                with col3:
-                    st.metric("Total Words", f"{int(stats['total_word_count']):,}")
-            except Exception as e:
-                # Silently handle errors with document stats
-                pass
-                
         except Exception as e:
             st.error(f"Error processing documents: {str(e)}")
 
     # Document clustering if enabled
     if show_clustering:
-        st.markdown("### 🔍 Document Structure Analysis")
+        st.markdown("### Document Structure Analysis")
         if st.button("Analyze Document Structure with K-means"):
             with st.spinner("Applying K-means clustering to identify document topics..."):
                 # Get all embeddings and chunks
@@ -620,7 +473,7 @@ if uploaded_files:
                             st.pyplot(fig)
                             
                             # Extract cluster characteristics
-                            st.markdown("### 🔍 Document Topics")
+                            st.markdown("### Document Topics")
                             
                             for i in range(n_clusters):
                                 # Get chunks in this cluster
@@ -675,665 +528,108 @@ if uploaded_files:
                 except Exception as e:
                     st.error(f"Error in clustering analysis: {str(e)}")
 
-# Document Library Section
+# In the document library section of the Streamlit app
 if show_document_library:
     st.markdown("---")
-    st.header("📚 Document Library")
+    st.header("Document Library")
     
-    # ADDED: Fix documents button
-    if st.button("🔧 Fix Document Library"):
-        if hasattr(st.session_state.pipeline, 'sql_store'):
-            with st.spinner("Fixing document library..."):
-                fixed_count = fix_persistent_files_table(st.session_state.pipeline)
-                if fixed_count > 0:
-                    st.success(f"Fixed {fixed_count} document(s) in the library")
-                    st.rerun()  # Refresh the page
-                else:
-                    st.info("No documents needed to be fixed")
+    # Add document management options
+    col1, col2 = st.columns(2)
     
-    # Check if SQL store is available
-    if hasattr(st.session_state.pipeline, 'sql_store'):
-        # Get list of stored documents
-        stored_docs = st.session_state.pipeline.sql_store.get_all_stored_documents()
-        
-        if stored_docs:
-            st.success(f"Found {len(stored_docs)} saved documents in your library")
+    with col1:
+        if st.button("Refresh Document List"):
+            st.session_state.document_list = []  # Clear the cached list
             
-            # Create tabs for different views
-            tab_options = ["Grid View", "Table View", "Analytics"]
-            st.session_state.document_library_tab = st.radio(
-                "View", tab_options, 
-                horizontal=True, 
-                index=tab_options.index(st.session_state.document_library_tab)
-            )
-            
-            if st.session_state.document_library_tab == "Grid View":
-                # Grid view with cards
-                cols = st.columns(3)
-                for i, doc in enumerate(stored_docs):
-                    with cols[i % 3]:
-                        with st.container():
-                            st.markdown(f"""
-                            <div class="doc-card">
-                                <h4>{doc['filename']}</h4>
-                                <p><small>Added: {doc['upload_date'][:10]}</small></p>
-                                <p>Type: {doc['document_type'] or 'Unknown'}<br>
-                                Size: {doc['file_size']/1024:.1f} KB<br>
-                                Views: {doc['access_count']}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.button(f"Load {i}", key=f"load_{doc['document_id']}"):
-                                    # Get binary data
-                                    binary_doc = st.session_state.pipeline.sql_store.get_binary_document(doc['document_id'])
-                                    if binary_doc and binary_doc['binary_data']:
-                                        # Create a temp file and process it
-                                        with st.spinner(f"Loading {doc['filename']}..."):
-                                            temp_dir = tempfile.mkdtemp()
-                                            file_path = os.path.join(temp_dir, doc['filename'])
-                                            with open(file_path, "wb") as f:
-                                                f.write(binary_doc['binary_data'])
-                                            
-                                            # Now process the document with the pipeline
-                                            st.session_state.pipeline.ingest_documents(temp_dir)
-                                            
-                                            # Show success message
-                                            st.success(f"📄 Loaded {doc['filename']} - ready to query!")
-                                    else:
-                                        st.error(f"Could not retrieve data for {doc['filename']}")
-                            
-                            with col2:
-                                if st.button(f"Delete {i}", key=f"delete_{doc['document_id']}"):
-                                    # Confirm deletion
-                                    if st.session_state.pipeline.sql_store.delete_stored_document(doc['document_id']):
-                                        st.success(f"Removed {doc['filename']} from library")
-                                        st.rerun()
-                                    else:
-                                        st.error("Failed to delete document")
-            
-            elif st.session_state.document_library_tab == "Table View":
-                # Table view
-                table_data = []
-                for doc in stored_docs:
-                    table_data.append({
-                        "Filename": doc['filename'],
-                        "Type": doc['document_type'] or "Unknown",
-                        "Size (KB)": f"{doc['file_size']/1024:.1f}",
-                        "Upload Date": doc['upload_date'][:10],
-                        "Views": doc['access_count']
-                    })
-                
-                # Convert to DataFrame for display
-                df = pd.DataFrame(table_data)
-                st.dataframe(df, use_container_width=True)
-                
-                # Document selection for actions
-                selected_docs = st.multiselect(
-                    "Select documents for bulk actions:",
-                    [doc['filename'] for doc in stored_docs]
-                )
-                
-                # Bulk actions row
-                if selected_docs:
-                    st.subheader("Document Actions")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("Load Selected Documents", key="bulk_load"):
-                            loaded_count = 0
-                            with st.spinner("Loading selected documents..."):
-                                for doc in stored_docs:
-                                    if doc['filename'] in selected_docs:
-                                        binary_doc = st.session_state.pipeline.sql_store.get_binary_document(doc['document_id'])
-                                        if binary_doc and binary_doc['binary_data']:
-                                            temp_dir = tempfile.mkdtemp()
-                                            file_path = os.path.join(temp_dir, doc['filename'])
-                                            with open(file_path, "wb") as f:
-                                                f.write(binary_doc['binary_data'])
-                                            
-                                            # Process with pipeline
-                                            st.session_state.pipeline.ingest_documents(temp_dir)
-                                            loaded_count += 1
-                                            
-                            st.success(f"Loaded {loaded_count} document(s) - ready to query!")
-                    
-                    with col2:
-                        if st.button("Remove Selected Documents", key="bulk_delete"):
-                            deleted_count = 0
-                            with st.spinner("Removing selected documents..."):
-                                for doc in stored_docs:
-                                    if doc['filename'] in selected_docs:
-                                        if st.session_state.pipeline.sql_store.delete_stored_document(doc['document_id']):
-                                            deleted_count += 1
-                                            
-                            st.success(f"Removed {deleted_count} document(s) from library")
-                            st.rerun()
-            
-            else:  # Analytics tab
-                # Display library statistics
-                st.subheader("Document Library Analytics")
-                
-                # Get detailed stats
-                stats = st.session_state.pipeline.sql_store.get_document_stats()
-                
-                # Basic metrics
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Documents", stats.get("persistent_document_count", 0))
-                with col2:
-                    st.metric("Total Size", f"{sum(doc['file_size'] for doc in stored_docs)/1024:.1f} KB")
-                with col3:
-                    st.metric("Total Views", sum(doc['access_count'] for doc in stored_docs))
-                
-                # Document type breakdown
-                st.subheader("Document Types")
-                doc_types = {}
-                for doc in stored_docs:
-                    doc_type = doc['document_type'] or "Unknown"
-                    doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
-                
-                # Create pie chart
-                if doc_types:
-                    plt.style.use('default')
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    
-                    labels = list(doc_types.keys())
-                    sizes = list(doc_types.values())
-                    
-                    # Custom colors for light theme
-                    colors = ['#1E88E5', '#4CAF50', '#FFC107', '#FF5252', '#9C27B0']
-                    
-                    # Create pie chart with percentage labels
-                    wedges, texts, autotexts = ax.pie(
-                        sizes, 
-                        labels=labels, 
-                        autopct='%1.1f%%',
-                        colors=colors[:len(doc_types)],
-                        startangle=90,
-                        wedgeprops={'edgecolor': 'white', 'linewidth': 1}
-                    )
-                    
-                    # Style the percentage text
-                    for autotext in autotexts:
-                        autotext.set_color('white')
-                        autotext.set_fontweight('bold')
-                    
-                    ax.set_title('Document Types in Library')
-                    ax.axis('equal')  # Equal aspect ratio ensures pie is circular
-                    
-                    st.pyplot(fig)
-                
-                # Document usage over time
-                st.subheader("Document Usage")
-                
-                # Get access data by document
-                access_data = {}
-                for doc in stored_docs:
-                    doc_name = doc['filename']
-                    if len(doc_name) > 25:  # Truncate long filenames
-                        doc_name = doc_name[:22] + '...'
-                    access_data[doc_name] = doc['access_count']
-                
-                # Create bar chart
-                plt.style.use('default')
-                fig, ax = plt.subplots(figsize=(10, 6))
-                
-                # Sort by access count
-                sorted_data = dict(sorted(access_data.items(), key=lambda x: x[1], reverse=True))
-                
-                bars = ax.bar(
-                    sorted_data.keys(), 
-                    sorted_data.values(),
-                    color='#1E88E5'
-                )
-                
-                # Add value labels
-                for bar in bars:
-                    height = bar.get_height()
-                    if height > 0:
-                        ax.text(
-                            bar.get_x() + bar.get_width()/2., 
-                            height + 0.1,
-                            f'{height:.0f}',
-                            ha='center', 
-                            va='bottom'
-                        )
-                
-                ax.set_title('Document Usage (Number of Accesses)')
-                ax.set_ylabel('Access Count')
-                ax.grid(True, linestyle='--', alpha=0.7, axis='y')
-                plt.xticks(rotation=45, ha='right')
-                plt.tight_layout()
-                
-                st.pyplot(fig)
-                
-                # Most recently accessed documents
-                st.subheader("Recently Accessed Documents")
-                
-                # Sort by last accessed time
-                recent_docs = sorted(
-                    stored_docs, 
-                    key=lambda x: x.get('upload_date', ''), 
-                    reverse=True
-                )[:5]
-                
-                if recent_docs:
-                    recent_data = []
-                    for doc in recent_docs:
-                        recent_data.append({
-                            "Filename": doc['filename'],
-                            "Last Accessed": doc.get('upload_date', 'Unknown')[:16].replace('T', ' '),
-                            "Access Count": doc['access_count']
-                        })
-                    
-                    st.dataframe(pd.DataFrame(recent_data), use_container_width=True)
-                else:
-                    st.info("No recently accessed documents")
-                
-                # Storage management
-                st.subheader("Storage Management")
-                
-                # Calculate total storage used
-                total_size_kb = sum(doc['file_size'] for doc in stored_docs) / 1024
-                
-                # Show available storage (for demo purposes)
-                storage_limit_kb = 100 * 1024  # 100MB example limit
-                storage_used_pct = (total_size_kb / storage_limit_kb) * 100
-                
-                # Create a progress bar
-                st.markdown(f"**Storage Used**: {total_size_kb:.1f} KB of {storage_limit_kb/1024:.1f} MB ({storage_used_pct:.1f}%)")
-                st.progress(min(storage_used_pct/100, 1.0))
-                
-                if storage_used_pct > 80:
-                    st.warning("Storage usage is high. Consider removing unused documents.")
-                
-                # ADDED: Fix any unfixed documents automatically
-                conn = sqlite3.connect(st.session_state.pipeline.sql_db_path)
-                cursor = conn.cursor()
-                
-                # Check if binary_data column exists
-                cursor.execute("PRAGMA table_info(documents)")
-                columns = [col[1] for col in cursor.fetchall()]
-                
-                if 'binary_data' in columns:
-                    cursor.execute("""
-                    SELECT COUNT(*) FROM documents d
-                    LEFT JOIN persistent_files p ON d.document_id = p.document_id
-                    WHERE p.document_id IS NULL AND d.binary_data IS NOT NULL
-                    """)
-                else:
-                    cursor.execute("""
-                    SELECT COUNT(*) FROM documents d
-                    LEFT JOIN persistent_files p ON d.document_id = p.document_id
-                    WHERE p.document_id IS NULL
-                    """)
-                    
-                unfixed_count = cursor.fetchone()[0]
-                conn.close()
-                
-                if unfixed_count > 0:
-                    st.warning(f"Found {unfixed_count} document(s) not properly registered in the library")
-                    if st.button("Fix Missing Documents"):
-                        fixed = fix_persistent_files_table(st.session_state.pipeline)
-                        if fixed > 0:
-                            st.success(f"Fixed {fixed} document(s)")
-                            st.rerun()
-                
-                # Add a cleanup button for unused documents
-                if st.button("Clean Unused Documents"):
-                    # Find documents with no access
-                    unused_docs = [doc for doc in stored_docs if doc['access_count'] <= 1]
-                    
-                    if unused_docs:
-                        deleted = 0
-                        with st.spinner(f"Cleaning {len(unused_docs)} unused documents..."):
-                            for doc in unused_docs:
-                                if st.session_state.pipeline.sql_store.delete_stored_document(doc['document_id']):
-                                    deleted += 1
-                        
-                        if deleted > 0:
-                            st.success(f"Removed {deleted} unused documents, freeing up space")
-                            st.rerun()
-                        else:
-                            st.error("Failed to remove unused documents")
-                    else:
-                        st.info("No unused documents found to clean up")
-        else:
-            st.info("Your document library is empty. Upload documents and enable 'Save documents to library' to build your library.")
-            
-            # Check if there are documents that need fixing
-            conn = sqlite3.connect(st.session_state.pipeline.sql_db_path)
-            cursor = conn.cursor()
-            
-            # Check if binary_data column exists
-            cursor.execute("PRAGMA table_info(documents)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            if 'binary_data' in columns:
-                cursor.execute("SELECT COUNT(*) FROM documents WHERE binary_data IS NOT NULL")
-            else:
-                cursor.execute("SELECT COUNT(*) FROM documents")
-                
-            unfixed_docs = cursor.fetchone()[0]
-            conn.close()
-            
-            if unfixed_docs > 0:
-                st.warning(f"Found {unfixed_docs} document(s) that need to be added to the library")
-                if st.button("Fix Documents"):
-                    fixed_count = fix_persistent_files_table(st.session_state.pipeline)
-                    if fixed_count > 0:
-                        st.success(f"Added {fixed_count} document(s) to your library")
-                        st.rerun()  # Refresh the page to show the documents
-            
-            # Add explanation about persistence
-            st.markdown("""
-            <div class="info-box">
-            <h4>About Document Persistence</h4>
-            <p>The document library allows you to store your financial documents for future analysis sessions. When you save a document to the library, it will be stored in the SQLite database for future use, enabling you to:</p>
-            <ul>
-                <li>Access your documents across different Hermes sessions</li>
-                <li>Avoid re-uploading frequently used documents</li>
-                <li>Track document usage statistics</li>
-                <li>Organize your financial documents in one place</li>
-            </ul>
-            <p>To save documents, simply upload them with the "Save documents to library" option enabled.</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Show sample upload with save option highlighted
-            st.markdown("""
-            <div style="border:1px solid #ddd; border-radius:5px; padding:15px; margin-top:20px;">
-                <h4 style="margin-top:0">How to Save Documents</h4>
-                <ol>
-                    <li>Upload your financial documents using the file uploader above</li>
-                    <li>Make sure the "Save documents to library for future use" checkbox is selected</li>
-                    <li>Your documents will be processed and saved to the library</li>
-                    <li>Return to the Document Library anytime to access your saved documents</li>
-                </ol>
-            </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.warning("Document library requires SQL support. Please ensure that SQLite is properly configured.")
-
-# SQL Features Section (Advanced)
-if show_sql_features and (uploaded_files or (show_document_library and hasattr(st.session_state.pipeline, 'sql_store') and st.session_state.pipeline.sql_store.get_all_stored_documents())):
-    st.markdown("---")
-    st.header("📊 SQL Database Features")
-    st.markdown("This section demonstrates SQL capabilities for document management and search.")
-    
-    # Only show if SQL store is available
-    if hasattr(st.session_state.pipeline, 'sql_store'):
-        # Create a simplified SQL search interface
-        st.subheader("SQL Keyword Search")
-        sql_search_term = st.text_input(
-            "Search documents with SQL LIKE query:", 
-            placeholder="e.g., revenue OR profit OR financial"
-        )
-        
-        if sql_search_term:
-            try:
-                # Connect directly to avoid threading issues
-                conn = get_db_connection(st.session_state.pipeline.sql_db_path)
-                cursor = conn.cursor()
-                
-                # Use SQL LIKE for basic text search
-                search_pattern = f"%{sql_search_term}%"
-                cursor.execute('''
-                SELECT c.chunk_id, c.document_id, d.filename, c.chunk_index, c.text, c.word_count
-                FROM chunks c
-                JOIN documents d ON c.document_id = d.document_id
-                WHERE c.text LIKE ?
-                ORDER BY d.upload_date DESC
-                LIMIT 5
-                ''', (search_pattern,))
-                
-                results = cursor.fetchall()
-                columns = ['chunk_id', 'document_id', 'filename', 'chunk_index', 'text', 'word_count']
-                
-                # Display results
-                if results:
-                    st.success(f"Found {len(results)} matches")
-                    
-                    for i, row in enumerate(results):
-                        result = dict(zip(columns, row))
-                        with st.expander(f"Match {i+1}: {result['filename']} (Chunk {result['chunk_index']})"):
-                            st.markdown(f"<div class='source-header'>Word count: {result['word_count']}</div>", unsafe_allow_html=True)
-                            
-                            st.markdown("<div class='source-header'>Content:</div>", unsafe_allow_html=True)
-                            st.markdown(f"<div class='source-content'>{result['text']}</div>", unsafe_allow_html=True)
-                else:
-                    st.info("No matches found")
-                
-            except Exception as e:
-                st.error(f"SQL Search error: {str(e)}")
-        
-        # Show a simple custom SQL query interface
-        with st.expander("Run Custom SQL Query"):
-            st.markdown("""
-            This feature demonstrates custom SQL analytics on the document database. 
-            SQL allows for flexible querying and analysis of document metadata and content.
-            """)
-            
-            # Example queries dropdown
-            example_queries = {
-                "Select a query": "",
-                "Document Summary": "SELECT document_id, filename FROM documents",
-                "Top 5 Largest Chunks": "SELECT document_id, chunk_index, word_count FROM chunks ORDER BY word_count DESC LIMIT 5",
-                "Search for financial terms": "SELECT document_id, chunk_index, text FROM chunks WHERE text LIKE '%financial%' LIMIT 3",
-                "Get document date estimates": "SELECT query, timestamp, document_date_estimate FROM search_history WHERE document_date_estimate IS NOT NULL AND document_date_estimate != 'Unknown' ORDER BY timestamp DESC LIMIT 5",
-                "Library document stats": "SELECT p.document_id, p.filename, p.access_count, p.upload_date FROM persistent_files p ORDER BY p.access_count DESC"
-            }
-            
-            selected_example = st.selectbox("Example Queries:", options=list(example_queries.keys()))
-            
-            # SQL query input
-            custom_query = st.text_area(
-                "Enter SQL Query (be careful with complex queries):",
-                value=example_queries[selected_example] if selected_example in example_queries else "",
-                height=100
-            )
-            
-            if custom_query and st.button("Run Query"):
+    with col2:
+        if st.button("Clear All Documents"):
+            confirm = st.checkbox("Are you sure? This cannot be undone.", value=False)
+            if confirm:
                 try:
-                    # Connect directly to avoid threading issues
-                    conn = get_db_connection(st.session_state.pipeline.sql_db_path)
-                    cursor = conn.cursor()
-                    
-                    # Execute query
-                    cursor.execute(custom_query)
-                    results = cursor.fetchall()
-                    columns = [desc[0] for desc in cursor.description]
-                    
-                    # Convert to DataFrame for display
-                    if results:
-                        results_df = pd.DataFrame(results, columns=columns)
-                        st.dataframe(results_df)
-                        st.caption(f"Query returned {len(results)} rows")
-                    else:
-                        st.info("Query returned no results")
-                    
+                    # Delete the collection and recreate it
+                    st.session_state.pipeline.store.client.delete_collection(
+                        collection_name=st.session_state.pipeline.store.collection_name
+                    )
+                    # Recreate the collection
+                    embedding_dim = st.session_state.pipeline.embedder.embedding_dim
+                    st.session_state.pipeline.store.create_collection(embedding_dim)
+                    st.success("All documents have been removed from the library.")
+                    st.session_state.document_list = []  # Clear the cached list
                 except Exception as e:
-                    st.error(f"Error executing query: {str(e)}")
+                    st.error(f"Error clearing documents: {str(e)}")
+    
+    # List documents in the library
+    try:
+        # Cache document list in session state to avoid repeated queries
+        if "document_list" not in st.session_state:
+            # Query for unique document IDs
+            results = st.session_state.pipeline.store.client.scroll(
+                collection_name=st.session_state.pipeline.store.collection_name,
+                limit=1000,
+                with_payload=True
+            )
+            
+            # Extract unique documents
+            documents = {}
+            if results and results.points:
+                for point in results.points:
+                    if 'document_id' in point.payload and 'document_name' in point.payload:
+                        doc_id = point.payload['document_id']
+                        doc_name = point.payload['document_name']
+                        if doc_id not in documents:
+                            documents[doc_id] = {
+                                'name': doc_name,
+                                'id': doc_id,
+                                'chunk_count': 1
+                            }
+                        else:
+                            documents[doc_id]['chunk_count'] += 1
+            
+            st.session_state.document_list = list(documents.values())
         
-        # Document Analytics
-        try:
-            conn = get_db_connection(st.session_state.pipeline.sql_db_path)
-            cursor = conn.cursor()
+        # Display documents
+        if not st.session_state.document_list:
+            st.info("No documents in the library yet. Upload documents to add them.")
+        else:
+            st.subheader(f"Found {len(st.session_state.document_list)} Documents")
             
-            # Get document type distribution
-            cursor.execute('''
-            SELECT document_type, COUNT(*) as count
-            FROM documents
-            GROUP BY document_type
-            ''')
-            doc_types = cursor.fetchall()
-            
-            if doc_types:
-                st.subheader("Document Type Distribution")
-                
-                # Create pie chart with light theme
-                plt.style.use('default')
-                fig, ax = plt.subplots(figsize=(10, 6))
-                
-                labels = [t[0] for t in doc_types]
-                sizes = [t[1] for t in doc_types]
-                
-                # Custom colors for light theme
-                colors = ['#1E88E5', '#4CAF50', '#FFC107', '#FF5252', '#9C27B0']
-                
-                # Create pie chart with percentage labels
-                wedges, texts, autotexts = ax.pie(
-                    sizes, 
-                    labels=labels, 
-                    autopct='%1.1f%%',
-                    colors=colors[:len(doc_types)],
-                    startangle=90,
-                    wedgeprops={'edgecolor': 'white', 'linewidth': 1}
-                )
-                
-                # Style the percentage text
-                for autotext in autotexts:
-                    autotext.set_color('white')
-                    autotext.set_fontweight('bold')
-                
-                ax.set_title('Document Types in Database')
-                ax.axis('equal')  # Equal aspect ratio ensures pie is circular
-                
-                st.pyplot(fig)
-            
-            # Add a new section to visualize model usage stats
-            st.subheader("Model Usage Statistics")
-            try:
-                # Check if the model_used column exists
-                cursor.execute("PRAGMA table_info(search_history)")
-                columns = [col[1] for col in cursor.fetchall()]
-                
-                if 'model_used' in columns:
-                    cursor.execute('''
-                    SELECT model_used, COUNT(*) as count
-                    FROM search_history
-                    WHERE model_used IS NOT NULL
-                    GROUP BY model_used
-                    ''')
-                    model_stats = cursor.fetchall()
-                    
-                    if model_stats:
-                        # Create bar chart for model usage
-                        plt.style.use('default')
-                        fig, ax = plt.subplots(figsize=(10, 6))
+            # Create a grid layout for documents
+            cols = st.columns(3)
+            for i, doc in enumerate(st.session_state.document_list):
+                with cols[i % 3]:
+                    with st.container():
+                        st.markdown(f"""
+                        <div class="doc-card">
+                            <h4>{doc['name']}</h4>
+                            <p>Chunks: {doc['chunk_count']}</p>
+                            <p>ID: {doc['id']}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
                         
-                        models = [stat[0] if stat[0] else "Not specified" for stat in model_stats]
-                        counts = [stat[1] for stat in model_stats]
-                        
-                        # Bar chart
-                        bars = ax.bar(models, counts, color='#1E88E5')
-                        
-                        # Add value labels
-                        for bar in bars:
-                            height = bar.get_height()
-                            ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                                    f'{height:.0f}',
-                                    ha='center', va='bottom')
-                        
-                        ax.set_title('OpenAI Model Usage')
-                        ax.set_ylabel('Number of Queries')
-                        ax.grid(True, linestyle='--', alpha=0.7, axis='y')
-                        plt.xticks(rotation=45, ha='right')
-                        plt.tight_layout()
-                        
-                        st.pyplot(fig)
-                    else:
-                        st.info("No model usage data available yet")
-            except Exception as e:
-                # Just skip this section if there's an error
-                pass
-                
-        except Exception as e:
-            # Silently ignore errors in analytics
-            pass
-            
-    else:
-        st.warning("SQL features are not available. Make sure the SQL components are properly installed.")
+                        # Add a delete button for each document
+                        if st.button(f"Delete", key=f"del_{doc['id']}"):
+                            try:
+                                deleted = st.session_state.pipeline.store.delete_document(doc['id'])
+                                if deleted:
+                                    st.success(f"Deleted {doc['name']}")
+                                    # Remove from the list 
+                                    st.session_state.document_list = [d for d in st.session_state.document_list if d['id'] != doc['id']]
+                                    st.experimental_rerun()
+                                else:
+                                    st.error(f"Failed to delete {doc['name']}")
+                            except Exception as e:
+                                st.error(f"Error: {str(e)}")
+        
+    except Exception as e:
+        st.error(f"Error loading document library: {str(e)}")
 
 # QA Section - Primary Feature
 st.markdown("---")
-st.subheader("❓ Ask a Question About Your Documents")
+st.subheader("Ask a Question About Your Documents")
 
-# ADDED: Check if there are documents that need fixing before allowing questions
-if hasattr(st.session_state.pipeline, 'sql_store'):
-    conn = sqlite3.connect(st.session_state.pipeline.sql_db_path)
-    cursor = conn.cursor()
-    
-    # First check if binary_data column exists
-    cursor.execute("PRAGMA table_info(documents)")
-    columns = [col[1] for col in cursor.fetchall()]
-    
-    if 'binary_data' in columns:
-        # Check for documents not in persistent_files
-        cursor.execute("""
-        SELECT COUNT(*) FROM documents d
-        LEFT JOIN persistent_files p ON d.document_id = p.document_id
-        WHERE p.document_id IS NULL AND d.binary_data IS NOT NULL
-        """)
-        unfixed_count = cursor.fetchone()[0]
-        
-        if unfixed_count > 0:
-            st.warning(f"⚠️ Found {unfixed_count} document(s) not properly registered in the library. This may affect search results.")
-            if st.button("Fix Documents Now"):
-                fixed = fix_persistent_files_table(st.session_state.pipeline)
-                if fixed > 0:
-                    st.success(f"✅ Fixed {fixed} document(s) in the library")
-                    st.rerun()
-    else:
-        # If binary_data column doesn't exist, use a simpler check
-        cursor.execute("""
-        SELECT COUNT(*) FROM documents d
-        LEFT JOIN persistent_files p ON d.document_id = p.document_id
-        WHERE p.document_id IS NULL
-        """)
-        unfixed_count = cursor.fetchone()[0]
-        
-        if unfixed_count > 0:
-            st.warning(f"⚠️ Found {unfixed_count} document(s) not properly registered in the library. This may affect search results.")
-            if st.button("Fix Documents Now"):
-                fixed = fix_persistent_files_table(st.session_state.pipeline)
-                if fixed > 0:
-                    st.success(f"✅ Fixed {fixed} document(s) in the library")
-                    st.rerun()
-    
-    conn.close()
-
-if not uploaded_files and not (show_document_library and hasattr(st.session_state.pipeline, 'sql_store') and st.session_state.pipeline.sql_store.get_all_stored_documents()):
-    # Check if there might be documents that just need fixing
-    if hasattr(st.session_state.pipeline, 'sql_store'):
-        conn = sqlite3.connect(st.session_state.pipeline.sql_db_path)
-        cursor = conn.cursor()
-        
-        # First check if binary_data column exists
-        cursor.execute("PRAGMA table_info(documents)")
-        columns = [col[1] for col in cursor.fetchall()]
-        
-        if 'binary_data' in columns:
-            cursor.execute("SELECT COUNT(*) FROM documents WHERE binary_data IS NOT NULL")
-        else:
-            # If binary_data column doesn't exist, just count all documents
-            cursor.execute("SELECT COUNT(*) FROM documents")
-            
-        unfixed_docs = cursor.fetchone()[0]
-        conn.close()
-        
-        if unfixed_docs > 0:
-            st.warning(f"⚠️ Found {unfixed_docs} document(s) that aren't visible in your library. Click 'Fix Documents' to make them available.")
-            if st.button("Fix Documents", key="fix_docs_question"):
-                fixed_count = fix_persistent_files_table(st.session_state.pipeline)
-                if fixed_count > 0:
-                    st.success(f"✅ Fixed {fixed_count} document(s). They're now available in your library!")
-                    st.rerun()
-    
+if not uploaded_files:
     st.markdown("""
     <div class="warning-box">
-    Please upload at least one document or load a document from your library to start asking questions.
+    Please upload at least one document to start asking questions.
     </div>
     """, unsafe_allow_html=True)
 else:
@@ -1368,20 +664,20 @@ else:
                 )
                 
                 # Display the answer
-                st.markdown("### 💬 Answer")
+                st.markdown("### Answer")
                 
                 # Show search information if available
                 if "search_performed" in result and result["search_performed"]:
                     if result.get("search_successful", False):
-                        st.success(f"✅ Enhanced with current market information")
+                        st.success(f"Enhanced with current market information")
                         
                         # Display document date estimate if available
                         if "document_date_estimate" in result and result["document_date_estimate"] and result["document_date_estimate"].lower() != "unknown":
-                            st.info(f"📅 Document information from approximately {result['document_date_estimate']}")
+                            st.info(f"Document information from approximately {result['document_date_estimate']}")
                             
                         st.markdown(f"*Search query: \"{result.get('search_query', query)}\"*")
                     else:
-                        st.warning(f"ℹ️ Attempted to find current information but encountered an issue: {result.get('search_error', 'Unknown error')}")
+                        st.warning(f"Attempted to find current information but encountered an issue: {result.get('search_error', 'Unknown error')}")
                 
                 # Display the answer in a styled box
                 st.markdown(f"""
@@ -1392,7 +688,7 @@ else:
                 
                 # Display sources
                 if result.get("sources"):
-                    st.markdown("### 📚 Sources")
+                    st.markdown("### Sources")
                     
                     # Group sources by type
                     document_sources = [src for src in result["sources"] if src.get("source_type", "") != "web_search"]
@@ -1400,13 +696,11 @@ else:
                     
                     # Display unified source container
                     with st.container():
-                        # Display document sources
+                        # Display all document sources in a single dropdown to hide similarities
                         if document_sources:
-                            st.markdown("#### Document Sources")
-                            for i, src in enumerate(document_sources, 1):
-                                with st.expander(f"Source {i} – {src['document_name']} (Relevance: {src['score']:.4f})"):
-                                    st.markdown(f"<div class='source-header'>Document: {src['document_name']}</div>", unsafe_allow_html=True)
-                                    st.markdown(f"<div class='source-header'>Relevance Score: {src['score']:.4f}</div>", unsafe_allow_html=True)
+                            with st.expander("Document Sources (Click to view)"):
+                                for i, src in enumerate(document_sources, 1):
+                                    st.markdown(f"**Source {i} – {src['document_name']}**")
                                     st.markdown("**Content:**")
                                     
                                     # Use styled content display
@@ -1415,6 +709,10 @@ else:
                                     {src["text"].replace('<', '&lt;').replace('>', '&gt;')}
                                     </div>
                                     """, unsafe_allow_html=True)
+                                    
+                                    # Add a separator between sources
+                                    if i < len(document_sources):
+                                        st.markdown("---")
                         
                         # Display web sources
                         if web_sources:
@@ -1431,33 +729,6 @@ else:
                                     st.markdown("**Content:**")
                                     st.markdown(f"<div class='source-content'>{src['text'][:1000] + '...' if len(src['text']) > 1000 else src['text']}</div>", unsafe_allow_html=True)
                     
-                    # Show similarity visualization
-                    if document_sources:
-                        st.markdown("### 📊 Query-Document Similarity Analysis")
-                        
-                        # Extract document texts and scores
-                        docs = [src["document_name"] for src in document_sources]
-                        scores = [src["score"] for src in document_sources]
-                        
-                        # Create bar chart with light theme
-                        plt.style.use('default')
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        
-                        y_pos = range(len(docs))
-                        bars = ax.barh(y_pos, scores, color='#1E88E5')
-                        ax.set_yticks(y_pos)
-                        ax.set_yticklabels(docs)
-                        ax.invert_yaxis()  # Labels read top-to-bottom
-                        ax.set_xlabel('Similarity Score')
-                        ax.set_title('Query-Document Relevance')
-                        ax.grid(True, linestyle='--', alpha=0.7, axis='x')
-                        
-                        # Add value labels
-                        for i, v in enumerate(scores):
-                            ax.text(v + 0.01, i, f"{v:.4f}", va='center')
-                        
-                        st.pyplot(fig)
-                    
                     # Export options
                     st.markdown("### Export Options")
                     export_format = st.selectbox("Export format:", ["None", "Text", "JSON"])
@@ -1473,7 +744,7 @@ else:
                             """
                             # Add document sources
                             for i, src in enumerate(document_sources, 1):
-                                export_text += f"\nSource {i}: {src['document_name']} (Score: {src['score']:.4f})\n"
+                                export_text += f"\nSource {i}: {src['document_name']}\n"
                                 export_text += f"{src['text'][:500]}...\n"
                                 
                             # Add web sources if available
@@ -1490,7 +761,7 @@ else:
                             st.download_button(
                                 label="Download Text",
                                 data=export_text,
-                                file_name="hermes_results.txt",
+                                file_name="opus_results.txt",
                                 mime="text/plain"
                             )
                         elif export_format == "JSON":
@@ -1499,8 +770,8 @@ else:
                                 "answer": result["answer"],
                                 "sources": result["sources"]
                             }
-                            
-                            # Add search information if available
+    
+                        # Add search information if available
                             if "search_performed" in result:
                                 export_data["search_info"] = {
                                     "search_performed": result["search_performed"],
@@ -1513,7 +784,7 @@ else:
                             st.download_button(
                                 label="Download JSON",
                                 data=json.dumps(export_data, indent=2),
-                                file_name="hermes_results.json",
+                                file_name="opus_results.json",
                                 mime="application/json"
                             )
                 
@@ -1524,6 +795,6 @@ else:
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; font-size: 0.8rem; padding: 20px 0;">
-Hermes - Financial Document Analysis System | RAG-powered insights
+Opus - Financial Document Analysis System | RAG-powered insights
 </div>
 """, unsafe_allow_html=True)

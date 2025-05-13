@@ -6,3 +6,5 @@ torch==2.0.1
 PyMuPDF==1.22.5
 nltk==3.8.1
 openai==0.28.1
+python-dotenv==1.0.0
+matplotlib==3.7.1
