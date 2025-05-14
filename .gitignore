@@ -7,6 +7,13 @@ ENV/
 env.bak/
 venv.bak/
 
+# Add to .gitignore
+**/__pycache__/
+*.pyc
+data/qdrant/collection/*/storage.sqlite
+data/qdrant/meta.json
+*.db
+
 # Environment variables
 .env
 *.env
